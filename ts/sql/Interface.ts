@@ -375,6 +375,11 @@ export type StickerPackRefType = Readonly<{
 export type UnprocessedType = {
   id: string;
   timestamp: number;
+  /*
+   * A client generated date used for removing old envelopes from the table
+   * on startup.
+   */
+  receivedAtDate: number;
   receivedAtCounter: number;
   attempts: number;
   type: number;
@@ -1005,6 +1010,9 @@ type WritableInterface = {
   disableMessageInsertTriggers(): void;
   enableMessageInsertTriggersAndBackfill(): void;
   ensureMessageInsertTriggersAreEnabled(): void;
+
+  disableFSync(): void;
+  enableFSyncAndCheckpoint(): void;
 
   processGroupCallRingCancellation(ringId: bigint): void;
   cleanExpiredGroupCallRingCancellations(): void;

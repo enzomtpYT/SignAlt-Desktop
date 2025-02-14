@@ -124,7 +124,6 @@ export type StorageAccessType = {
   phoneNumberDiscoverability: PhoneNumberDiscoverability;
   pinnedConversationIds: ReadonlyArray<string>;
   preferContactAvatars: boolean;
-  primarySendsSms: boolean;
   textFormatting: boolean;
   typingIndicators: boolean;
   sealedSenderIndicators: boolean;
@@ -212,6 +211,8 @@ export type StorageAccessType = {
   // The `firstAppVersion` present on an BackupInfo from an imported backup.
   restoredBackupFirstAppVersion: string;
 
+  postRegistrationSyncsStatus: 'incomplete' | 'complete';
+
   // Deprecated
   'challenge:retry-message-ids': never;
   nextSignedKeyRotationTime: number;
@@ -226,6 +227,7 @@ export type StorageAccessType = {
   hasRegisterSupportForUnauthenticatedDelivery: never;
   masterKeyLastRequestTime: never;
   versionedExpirationTimer: never;
+  primarySendsSms: never;
 };
 
 export type StorageInterface = {

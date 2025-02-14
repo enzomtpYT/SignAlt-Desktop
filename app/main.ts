@@ -8,7 +8,6 @@ import { chmod, realpath, writeFile } from 'fs-extra';
 import { randomBytes } from 'crypto';
 import { createParser } from 'dashdash';
 
-import normalizePath from 'normalize-path';
 import fastGlob from 'fast-glob';
 import PQueue from 'p-queue';
 import { get, pick, isNumber, isBoolean, some, debounce, noop } from 'lodash';
@@ -844,6 +843,8 @@ async function createWindow() {
 
   mainWindow.on('resize', captureWindowStats);
   mainWindow.on('move', captureWindowStats);
+  mainWindow.on('maximize', captureWindowStats);
+  mainWindow.on('unmaximize', captureWindowStats);
 
   if (!ciMode && config.get<boolean>('openDevTools')) {
     // Open the DevTools.
@@ -949,6 +950,9 @@ async function createWindow() {
       }
       return;
     }
+
+    // Persist pending window settings to ephemeralConfig
+    debouncedSaveStats.flush();
 
     windowState.markRequestedShutdown();
     await requestShutdown();
@@ -2945,8 +2949,7 @@ async function ensureFilePermissions(onlyFiles?: Array<string>) {
 
   const start = Date.now();
   const userDataPath = await realpath(app.getPath('userData'));
-  // fast-glob uses `/` for all platforms
-  const userDataGlob = normalizePath(join(userDataPath, '**', '*'));
+  const userDataGlob = attachments.prepareGlobPattern(userDataPath);
 
   // Determine files to touch
   const files = onlyFiles

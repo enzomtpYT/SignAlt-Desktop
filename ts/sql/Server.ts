@@ -541,6 +541,9 @@ export const DataWriter: ServerWritableInterface = {
   enableMessageInsertTriggersAndBackfill,
   ensureMessageInsertTriggersAreEnabled,
 
+  disableFSync,
+  enableFSyncAndCheckpoint,
+
   // Server-only
 
   removeKnownStickers,
@@ -4629,6 +4632,7 @@ function saveUnprocessed(db: WritableDB, data: UnprocessedType): string {
   const {
     id,
     timestamp,
+    receivedAtDate,
     receivedAtCounter,
     attempts,
     type,
@@ -4659,6 +4663,7 @@ function saveUnprocessed(db: WritableDB, data: UnprocessedType): string {
       id,
       timestamp,
       receivedAtCounter,
+      receivedAtDate,
       attempts,
       type,
       isEncrypted,
@@ -4680,6 +4685,7 @@ function saveUnprocessed(db: WritableDB, data: UnprocessedType): string {
       $id,
       $timestamp,
       $receivedAtCounter,
+      $receivedAtDate,
       $attempts,
       $type,
       $isEncrypted,
@@ -4702,7 +4708,8 @@ function saveUnprocessed(db: WritableDB, data: UnprocessedType): string {
   ).run({
     id,
     timestamp,
-    receivedAtCounter: receivedAtCounter ?? null,
+    receivedAtCounter,
+    receivedAtDate,
     attempts,
     type,
     isEncrypted: isEncrypted ? 1 : 0,
@@ -4750,9 +4757,11 @@ function getAllUnprocessedIds(db: WritableDB): Array<string> {
   return db.transaction(() => {
     // cleanup first
     const { changes: deletedStaleCount } = db
-      .prepare<Query>('DELETE FROM unprocessed WHERE timestamp < $monthAgo')
+      .prepare<Query>(
+        'DELETE FROM unprocessed WHERE receivedAtDate < $messageQueueCutoff'
+      )
       .run({
-        monthAgo: Date.now() - 45 * durations.DAY,
+        messageQueueCutoff: Date.now() - 45 * durations.DAY,
       });
 
     if (deletedStaleCount !== 0) {
@@ -7484,9 +7493,6 @@ function disableMessageInsertTriggers(db: WritableDB): void {
     db.exec('DROP TRIGGER IF EXISTS messages_on_insert;');
     db.exec('DROP TRIGGER IF EXISTS messages_on_insert_insert_mentions;');
   })();
-
-  db.pragma('checkpoint_fullfsync = false');
-  db.pragma('synchronous = OFF');
 }
 
 const selectMentionsFromMessages = `
@@ -7496,6 +7502,19 @@ const selectMentionsFromMessages = `
   FROM messages, json_each(messages.json ->> 'bodyRanges') as bodyRanges
   WHERE bodyRanges.value ->> 'mentionAci' IS NOT NULL
 `;
+
+function disableFSync(db: WritableDB): void {
+  db.pragma('checkpoint_fullfsync = false');
+  db.pragma('synchronous = OFF');
+}
+
+function enableFSyncAndCheckpoint(db: WritableDB): void {
+  db.pragma('checkpoint_fullfsync = true');
+  db.pragma('synchronous = FULL');
+
+  // Finally fully commit WAL into the database
+  db.pragma('wal_checkpoint(FULL)');
+}
 
 function enableMessageInsertTriggersAndBackfill(db: WritableDB): void {
   const createTriggersQuery = `
@@ -7526,12 +7545,6 @@ function enableMessageInsertTriggersAndBackfill(db: WritableDB): void {
       value: false,
     });
   })();
-
-  db.pragma('checkpoint_fullfsync = true');
-  db.pragma('synchronous = FULL');
-
-  // Finally fully commit WAL into the database
-  db.pragma('wal_checkpoint(FULL)');
 }
 
 function backfillMessagesFtsTable(db: WritableDB): void {

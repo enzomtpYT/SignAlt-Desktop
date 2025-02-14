@@ -300,7 +300,6 @@ export default class MessageReceiver
   #serverTrustRoot: Uint8Array;
   #stoppingProcessing?: boolean;
   #pniIdentityKeyCheckRequired?: boolean;
-  #isAppReadyForProcessing: boolean = false;
 
   constructor({ storage, serverTrustRoot }: MessageReceiverOptions) {
     super();
@@ -347,15 +346,6 @@ export default class MessageReceiver
       wait: 75,
       maxSize: 30,
       processBatch: this.#cacheRemoveBatch.bind(this),
-    });
-
-    window.Whisper.events.on('app-ready-for-processing', () => {
-      this.#isAppReadyForProcessing = true;
-      this.reset();
-    });
-
-    window.Whisper.events.on('online', () => {
-      this.reset();
     });
   }
 
@@ -447,8 +437,8 @@ export default class MessageReceiver
           serverTimestamp,
           urgent: isBoolean(decoded.urgent) ? decoded.urgent : true,
           story: decoded.story ?? false,
-          reportingToken: Bytes.isNotEmpty(decoded.reportingToken)
-            ? decoded.reportingToken
+          reportingToken: Bytes.isNotEmpty(decoded.reportSpamToken)
+            ? decoded.reportSpamToken
             : undefined,
           groupId: undefined,
         };
@@ -477,16 +467,11 @@ export default class MessageReceiver
     );
   }
 
-  public reset(): void {
-    log.info('MessageReceiver.reset');
+  public startProcessingQueue(): void {
+    log.info('MessageReceiver.startProcessingQueue');
     this.#count = 0;
     this.#isEmptied = false;
     this.#stoppingProcessing = false;
-
-    if (!this.#isAppReadyForProcessing) {
-      log.info('MessageReceiver.reset: not ready yet, returning early');
-      return;
-    }
 
     drop(this.#addCachedMessagesToQueue());
   }
@@ -507,7 +492,6 @@ export default class MessageReceiver
   public stopProcessing(): void {
     log.info('MessageReceiver.stopProcessing');
     this.#stoppingProcessing = true;
-    this.#isAppReadyForProcessing = false;
   }
 
   public hasEmptied(): boolean {
@@ -874,9 +858,8 @@ export default class MessageReceiver
 
       const envelope: ProcessedEnvelope = {
         id: item.id,
-        receivedAtCounter: item.receivedAtCounter ?? item.timestamp,
-        receivedAtDate:
-          item.receivedAtCounter == null ? Date.now() : item.timestamp,
+        receivedAtCounter: item.receivedAtCounter,
+        receivedAtDate: item.receivedAtDate,
         messageAgeSec: item.messageAgeSec,
 
         // Proto.Envelope fields
@@ -1189,11 +1172,8 @@ export default class MessageReceiver
       sourceServiceId: envelope.sourceServiceId,
       sourceDevice: envelope.sourceDevice,
       destinationServiceId: envelope.destinationServiceId,
-
-      // This field is only used for aging items out of the cache. The original
-      //   envelope's timestamp will be used when retrying this item.
-      timestamp: envelope.receivedAtDate,
-
+      timestamp: envelope.timestamp,
+      receivedAtDate: envelope.receivedAtDate,
       attempts: 0,
       isEncrypted: true,
       content: envelope.content,
@@ -1451,7 +1431,7 @@ export default class MessageReceiver
       throw new Error('Unsealed envelope dropped due to stopping processing');
     }
 
-    if (envelope.type === Proto.Envelope.Type.RECEIPT) {
+    if (envelope.type === Proto.Envelope.Type.SERVER_DELIVERY_RECEIPT) {
       strictAssert(
         envelope.sourceServiceId,
         'Unsealed delivery receipt must have sourceServiceId'
@@ -2149,7 +2129,7 @@ export default class MessageReceiver
     logUnexpectedUrgentValue(envelope, 'sentSync');
 
     const {
-      destination,
+      destinationE164,
       destinationServiceId,
       timestamp,
       message: msg,
@@ -2182,7 +2162,7 @@ export default class MessageReceiver
     const ev = new SentEvent(
       {
         envelopeId: envelope.id,
-        destination: dropNull(destination),
+        destinationE164: dropNull(destinationE164),
         destinationServiceId,
         timestamp: timestamp?.toNumber(),
         serverTimestamp: envelope.serverTimestamp,
@@ -2677,8 +2657,8 @@ export default class MessageReceiver
       this.#handleNullMessage(envelope);
       return;
     }
-    if (content.callingMessage) {
-      await this.#handleCallingMessage(envelope, content.callingMessage);
+    if (content.callMessage) {
+      await this.#handleCallingMessage(envelope, content.callMessage);
       return;
     }
     if (content.receiptMessage) {
@@ -2836,7 +2816,7 @@ export default class MessageReceiver
 
   async #handleCallingMessage(
     envelope: UnsealedEnvelope,
-    callingMessage: Proto.ICallingMessage
+    callingMessage: Proto.ICallMessage
   ): Promise<void> {
     logUnexpectedUrgentValue(envelope, 'callingMessage');
 
@@ -3219,7 +3199,7 @@ export default class MessageReceiver
     }
 
     const {
-      destination,
+      destinationE164,
       destinationServiceId,
       expirationStartTimestamp,
       unidentifiedStatus,
@@ -3231,7 +3211,7 @@ export default class MessageReceiver
     const ev = new SentEvent(
       {
         envelopeId: envelope.id,
-        destination: dropNull(destination),
+        destinationE164: dropNull(destinationE164),
         destinationServiceId,
         timestamp: envelope.timestamp,
         serverTimestamp: envelope.serverTimestamp,
@@ -3278,7 +3258,6 @@ export default class MessageReceiver
 
     const ev = new ViewOnceOpenSyncEvent(
       {
-        source: dropNull(sync.sender),
         sourceAci: sync.senderAci
           ? normalizeAci(sync.senderAci, 'handleViewOnceOpen.senderUuid')
           : undefined,
@@ -3315,7 +3294,6 @@ export default class MessageReceiver
     const ev = new MessageRequestResponseEvent(
       {
         envelopeId: envelope.id,
-        threadE164: dropNull(sync.threadE164),
         threadAci: sync.threadAci
           ? normalizeAci(
               sync.threadAci,
@@ -3458,11 +3436,10 @@ export default class MessageReceiver
     logUnexpectedUrgentValue(envelope, 'readSync');
 
     const reads = read.map(
-      ({ timestamp, sender, senderAci }): ReadSyncEventData => ({
+      ({ timestamp, senderAci }): ReadSyncEventData => ({
         envelopeId: envelope.id,
         envelopeTimestamp: envelope.timestamp,
         timestamp: timestamp?.toNumber(),
-        sender: dropNull(sender),
         senderAci: senderAci
           ? normalizeAci(senderAci, 'handleRead.senderAci')
           : undefined,
@@ -3490,9 +3467,8 @@ export default class MessageReceiver
     logUnexpectedUrgentValue(envelope, 'viewSync');
 
     const views = viewed.map(
-      ({ timestamp, senderE164, senderAci }): ViewSyncEventData => ({
+      ({ timestamp, senderAci }): ViewSyncEventData => ({
         timestamp: timestamp?.toNumber(),
-        senderE164: dropNull(senderE164),
         senderAci: senderAci
           ? normalizeAci(senderAci, 'handleViewed.senderAci')
           : undefined,
@@ -4031,18 +4007,13 @@ function envelopeTypeToCiphertextType(type: number | undefined): number {
   if (type === Type.CIPHERTEXT) {
     return CiphertextMessageType.Whisper;
   }
-  if (type === Type.KEY_EXCHANGE) {
-    throw new Error(
-      'envelopeTypeToCiphertextType: Cannot process KEY_EXCHANGE messages'
-    );
-  }
   if (type === Type.PLAINTEXT_CONTENT) {
     return CiphertextMessageType.Plaintext;
   }
   if (type === Type.PREKEY_BUNDLE) {
     return CiphertextMessageType.PreKey;
   }
-  if (type === Type.RECEIPT) {
+  if (type === Type.SERVER_DELIVERY_RECEIPT) {
     return CiphertextMessageType.Plaintext;
   }
   if (type === Type.UNIDENTIFIED_SENDER) {
